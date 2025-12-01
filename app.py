@@ -10,16 +10,25 @@ import os
 
 app = Flask(__name__)
 
+# -------------------------
 # Load environment variables
+# -------------------------
 load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Download HuggingFace Embeddings
+if not PINECONE_API_KEY or not OPENAI_API_KEY:
+    raise ValueError("❌ Missing API keys. Check environment variables.")
+
+# -------------------------
+# Load embeddings model
+# -------------------------
 embeddings = download_hugging_face_embeddings()
 
-# Connect to existing Pinecone vector index
+# -------------------------
+# Connect to Pinecone index
+# -------------------------
 index_name = "medical-chatbot"
 
 docsearch = PineconeVectorStore.from_existing_index(
@@ -27,49 +36,69 @@ docsearch = PineconeVectorStore.from_existing_index(
     embedding=embeddings
 )
 
-# Create retriever
+# Retriever for RAG
 retriever = docsearch.as_retriever(
     search_type="similarity",
     search_kwargs={"k": 3}
 )
 
-# Chat model (GPT-4o or GPT-4o-mini)
-chatModel = ChatOpenAI(model="gpt-4o-mini")  # use mini to avoid quota issues
+# -------------------------
+# Chat Model
+# -------------------------
+chatModel = ChatOpenAI(model="gpt-4o-mini")
 
-# Define prompt
-prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", system_prompt),
-        ("human", "{question}")
-    ]
-)
+# -------------------------
+# Prompt template
+# -------------------------
+prompt = ChatPromptTemplate.from_messages([
+    ("system", system_prompt),
+    ("human", "{question}")
+])
 
-# ---- Modern LangChain RAG Pipeline (NO deprecated functions) ---- #
-
+# -------------------------
+# Full RAG pipeline
+# -------------------------
 rag_chain = (
-    {"context": retriever, "question": RunnablePassthrough()} 
+    {"context": retriever, "question": RunnablePassthrough()}
     | prompt
     | chatModel
 )
 
-# --------------------------------------------------------------- #
-
+# =========================================================
+#                       ROUTES
+# =========================================================
 
 @app.route("/")
 def index():
-    return render_template('chat.html')
+    return render_template("chat.html")
 
 
-@app.route("/get", methods=["GET", "POST"])
+@app.route("/get", methods=["POST"])
 def chat():
-    msg = request.form["msg"]
-    print("User Input:", msg)
+    user_msg = request.form.get("msg", "")
 
-    response = rag_chain.invoke(msg)
+    if not user_msg:
+        return "Please enter a message."
 
+    print("User Input:", user_msg)
+
+    response = rag_chain.invoke(user_msg)
     print("Response:", response.content)
+
     return response.content
 
 
-if __name__ == '__main__':
+# ---------- Health Check Route (important for deployment) ----------
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
+
+
+# =========================================================
+#      NOTE: We DO NOT run app.run() in production
+#      Gunicorn will run: gunicorn app:app
+# =========================================================
+
+if __name__ == "__main__":
+    # For local testing only
     app.run(host="0.0.0.0", port=5001, debug=True)
